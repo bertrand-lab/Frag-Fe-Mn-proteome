@@ -1,0 +1,720 @@
+2025-09-24 - load necessary packages
+```{r}
+#plotting 
+library (ggplot2) 
+library (plotly)
+
+#other
+library(dplyr)
+library(reshape2)
+library(stringr)
+library(tidyr)
+library(tidyverse)
+library(readr)
+library(grid)
+library(gridExtra)
+
+library(magrittr)
+library(GGally)
+library(ggpubr)
+library(scales)
+library(forcats)
+library(ggExtra)
+library (cowplot)
+
+
+setwd("C:/Users/loayj/OneDrive - Woods Hole Oceanographic Institution/postdoc/misc/other_projects/fcylproteomes/") #this is the directory where I keep all the data
+```
+
+2024-11-22 -- read in the data
+```{r}
+##read in the latest protein table output. this is median normalized and log transformed (need to triple check this)
+prot_data <- read_tsv ("./data/dia_frag_iq_02.tsv")
+#pep_data <- read_tsv ("./data/peptide.tsv")
+
+#rename protein samples and other columns to give them more sensible names
+prot_data <- prot_data %>% rename(
+    prot_name = "Protein.Group", 
+    all_mapped_prots = 'All Mapped Proteins',
+    lowFe_A = '01',
+    lowFe_B = '02',
+    lowFe_C = '03',
+    
+    medFe_A = '04',
+    medFe_B = '05',
+    medFe_C = '06',
+    
+    replete_A = '07',
+    replete_B = '08',
+    replete_C = '09',
+    
+    lowMn_A = '10',
+    lowMn_B = '11',
+    lowMn_C = '12')
+
+## Protein annotation data
+prot_annots <- read.csv(file = './data/MM_jq_jpm98.emapper.annotations.csv', col.names = c("protein_data",
+                                                                                         "seed_ortholog",
+                                                                                         "evalue",
+                                                                                         "score",
+                                                                                         "eggNOG_OGs",
+                                                                                         "max_annot_lvl",
+                                                                                         "COG_category",
+                                                                                         "Description",
+                                                                                         "Preferred_name",
+                                                                                         "GOs",
+                                                                                         "EC",
+                                                                                         "KEGG_ko",
+                                                                                         "KEGG_Pathway",
+                                                                                         "KEGG_Module",
+                                                                                         "KEGG_Reaction",
+                                                                                         "KEGG_rclass",
+                                                                                         "BRITE",
+                                                                                         "KEGG_TC",
+                                                                                         "CAZy",
+                                                                                         "BiGG_Reaction",
+                                                                                         "PFAMs"), skip = 4) #removes the unnecessary headers 
+
+prot_annots <- prot_annots[1:(nrow(prot_annots) - 3), ] # also removes the last three summary rows 
+
+names(prot_annots)[1] <- "prot_name"
+
+cog_category_names <- read.csv('./data/cog_categories.csv')
+```
+
+2025-07-22 -- metadata (growth rates, protein per cell, fvfm, etc.)
+```{r}
+metadata <- read.csv ("./data/metadata.csv")
+
+metadata_long <- melt(metadata,  id.vars=c("treatment", "replicate"))
+
+metadataplot <- function (variable) {ggplot( filter (metadata_long, grepl ({{variable}}, variable)), aes(x = factor(treatment, levels = c("low Fe", "med Fe", "low Mn", "replete")), y = value))+
+             geom_point(size = 2, stroke = 0.5, alpha = 0.8,  aes(color = treatment)) +
+             scale_color_manual(values = c("low Fe" = "black",
+                                           "med Fe" = "#009E73",
+                                           "low Mn" = "#56B4E9",
+                                           "replete" = "#CC79A7"))+
+              xlab("") +
+              theme_bw()+
+              theme(legend.position = 'none')}
+
+
+growthrate <- metadataplot ("growthrate") + ylab (expression("Growth rate (" * mu * " d"^-1 * ")")); growthrate
+
+esd <- metadataplot ("esd") + ylab(expression("ESD (" * mu * "m)")); esd
+
+
+fvfm <- metadataplot ("fvfm") + ylab(expression(F[v]/F[m])); fvfm
+sigma <- metadataplot ("sigma")+ ylab(expression(sigma~PSII)); sigma
+
+proteinpercell <- metadataplot ("proteinpercell_pg") + ylab(expression("Protein per cell (pg)")); proteinpercell
+proteinpervolume <- metadataplot ("proteinperum3_pg") + ylab(expression("Protein per " * mu * m^3 * " (pg)")); proteinpervolume
+
+
+bottom <- plot_grid(NULL, growthrate, NULL ,esd, 
+          NULL, fvfm, NULL, sigma, 
+         NULL, proteinpercell, NULL, proteinpervolume,
+          ncol = 4, 
+         rel_widths = c(0.1,1,0.1,1),
+          labels = c("(C)","" ,"(D)", "", "(E)", "", "(F)", "", "(G)", "", "(H)")); bottom
+
+
+top <- plot_grid(NULL, NULL, 
+             labels = c("(A)" ,"(B)")); top 
+
+
+
+#for including microscopy pictures in Figure 1
+library (png)
+
+microsc <- readPNG("./data/cell.png")
+g <- rasterGrob(microsc, interpolate = TRUE)
+
+samples <- readPNG("./data/Picture1.png")
+samples2 <- rasterGrob(samples, interpolate = TRUE)
+```
+
+2025-08-10 -- Figure 1 construction
+```{r}
+#png("C:/Users/loayj/OneDrive - Woods Hole Oceanographic Institution/postdoc/misc/other_projects/fcylproteomes/figures/figure1_20250904.png", width= 8.8, height= 10, units = "in",  res = 600)
+    
+plot_grid(top, NULL, bottom, 
+          ncol = 1, rel_heights = c(1, 0.01, 1.4), rel_widths = c(1,1)) +
+          draw_plot (g, x = 0.0, y = 0.6, width = 0.6, height = 0.38) +
+          draw_plot (samples2, x = 0.3, y = 0.6, width = 1, height = 0.4) 
+
+
+#dev.off()
+```
+
+
+2024-11-22 -- perform NMDS
+```{r}
+library(vegan)
+library (goeveg)
+
+protein_nmds <- prot_data [c(1, 5:16)]
+
+protein_nmds2 <- melt(protein_nmds, id.vars=c("prot_name")) %>%
+             rename(treatment = variable) %>%
+             rename(unnorm_abundance = value ) %>%
+    filter(!is.na(unnorm_abundance))
+
+sum(protein_nmds2$unnorm_abundance) 
+
+protein_nmds3 <- protein_nmds2 %>% #this creates a new column of normalized protein abundances grouped by treatment   
+  group_by(treatment) %>% 
+  mutate(norm_abundance = unnorm_abundance / sum(unnorm_abundance)) %>% 
+  ungroup()
+
+sum(protein_nmds3$norm_abundance) #this should = 12 after normalization (number of samples)
+
+protein_nmds4 <- dcast(protein_nmds3, treatment~prot_name, fun.aggregate = sum,  value.var = "norm_abundance") #this creates MANY columns
+
+
+protein_nmds5 = protein_nmds4 [c(2:8247)] 
+
+protein_nmds6 = as.matrix(protein_nmds5)
+
+dimcheckMDS(protein_nmds6,
+  distance = "bray",
+  k = 4,
+  trymax = 1000,
+  autotransform = TRUE)
+
+set.seed(123)
+
+nmds_protein = metaMDS(protein_nmds6, try = 1000, trymax = 1000, k = 2, distance = "bray") # try = 500, trymax = 500
+nmds_protein
+scores(nmds_protein, display = "sites")
+
+stressplot(nmds_protein, p.col = "black", l.col = "blue", title("Peptides")) #for the suplement
+
+data.scores_protein <- as.data.frame(scores(nmds_protein, "sites")) #can select sites (treatments) or species (variable)
+
+data.scores_protein$treatment <- protein_nmds4$treatment
+
+data.scores_protein <- data.scores_protein %>%
+    separate(treatment, into = c("treatment", "replicate"), sep = "_") %>%
+  mutate (treatment = factor(treatment, levels = c ("lowFe", "medFe", "lowMn", "replete")))
+
+
+nmds <- ggplot(data.scores_protein, aes(x = NMDS1, y = NMDS2))+
+        geom_point(size = 2, stroke = 1, aes(color = treatment))+
+        scale_color_manual(values = c( "lowFe" = "black",
+                                       "medFe" = "#009E73",
+                                       "replete" = "#CC79A7",
+                                       "lowMn" = "#56B4E9"), 
+                           
+                           labels = c( "lowFe" = "low Fe",
+                                       "medFe" = "med Fe",
+                                       "replete" = "replete",
+                                       "lowMn" = "low Mn"))+
+        theme_bw()+
+        theme(axis.text = element_text(colour = "black", size = 8), 
+              axis.title = element_text(colour = "black", size = 8),
+              panel.grid = element_blank(), 
+              legend.title=element_blank(), 
+              legend.key.size = unit(0.6, "lines"),                    # smaller boxes
+
+              legend.text = element_text(size = 7),                    # smaller legend text
+              legend.margin = margin(0, 0, 0, 0),                     
+              plot.margin = unit(c(0, 0, 0, 0), "cm") ); nmds
+```
+
+
+2025-07-18 upset plot
+```{r}
+library(UpSetR)
+
+# ---- Step 1: Define treatment replicate groups ----
+lowFe <- c("lowFe_A", "lowFe_B", "lowFe_C")
+medFe <- c("medFe_A", "medFe_B", "medFe_C")
+replete <- c("replete_A", "replete_B", "replete_C")
+lowMn <- c("lowMn_A", "lowMn_B", "lowMn_C")
+
+# ---- Step 2: Define function to get proteins present in ≥2 replicates ----
+get_present_proteins <- function(df, reps) {
+  df %>%
+    rowwise() %>%
+    filter(sum(c_across(all_of(reps)) > 0) >= 2) %>%
+    pull(prot_name)
+}
+
+# ---- Step 3: Identify proteins in each group ----
+proteins_lowFe <- get_present_proteins(prot_data, lowFe)
+proteins_medFe <- get_present_proteins(prot_data, medFe)
+proteins_replete <- get_present_proteins(prot_data, replete)
+proteins_lowMn <- get_present_proteins(prot_data, lowMn)
+
+# ---- Step 4: Combine into a presence/absence data frame for UpSetR ----
+all_proteins <- unique(c(proteins_lowFe, proteins_medFe, proteins_replete, proteins_lowMn))
+
+upset_df <- data.frame(Protein = all_proteins) %>%
+  mutate(
+    lowFe = ifelse(Protein %in% proteins_lowFe, 1, 0),
+    medFe = ifelse(Protein %in% proteins_medFe, 1, 0),
+    replete = ifelse(Protein %in% proteins_replete, 1, 0),
+    lowMn = ifelse(Protein %in% proteins_lowMn, 1, 0)
+  )
+
+# ---- Step 5: Create UpSet plot ----
+# UpSetR needs rownames
+upset_input <- upset_df %>%
+  column_to_rownames("Protein")
+
+colnames(upset_input)[colnames(upset_input) == "lowFe"] <- "low Fe"
+colnames(upset_input)[colnames(upset_input) == "medFe"] <- "med Fe"
+colnames(upset_input)[colnames(upset_input) == "lowMn"] <- "low Mn"
+
+
+#png("upset.png", width= 12, height= 6, units = "in",  res = 600) 
+ups <- UpSetR::upset(
+  upset_input,
+ sets = c("replete", "low Mn", "med Fe", "low Fe"),
+  keep.order = TRUE,
+  order.by = "freq",
+#  set_size.scale_max = 1,
+#set_size.numbers_size = 10,
+  sets.bar.color = "black",
+  main.bar.color = "black",
+  matrix.color = "black",
+  point.size = 3,            # Larger points
+  line.size = 1,             # Thicker lines
+  text.scale = c(1.5,1, 1.5, 1.5, 1.5, 1.5)); ups # (main bar, set size, set names, numbers, x-axis title, y-axis title)
+#dev.off()
+```
+
+
+2025-07-21 -- heatmap
+```{r}
+library(pheatmap)
+
+prot_data_long <- prot_data %>% 
+  dplyr::select(-n_fragments, -n_peptides, -all_mapped_prots) %>% 
+  melt(id.vars = 'prot_name') %>% 
+  separate(variable, into = c("treatment", "replicate"), sep = "_")
+
+## Average by treatment
+avg_protein_data <- prot_data_long %>%
+  group_by(prot_name, treatment) %>%
+  summarise(mean_value = mean(value, na.rm = TRUE)) %>%
+  ungroup()  
+
+## Making the data wide again
+avg_protein_data_wide <- avg_protein_data %>% 
+  dcast(prot_name ~ treatment) #%>% 
+  #replace(is.na(.), 0) ##another open is to include proteins that are not found in some of the treatments 
+
+## Getting the complete cases of proteins observed across all conditions
+avg_protein_data_wide_cc <- avg_protein_data_wide[complete.cases(avg_protein_data_wide), ]
+
+heatmap_means <- pheatmap(mat = avg_protein_data_wide_cc %>% 
+                 dplyr::select(-prot_name), 
+                 scale = "row", fontsize_col = 8, angle_col = 0, labels_row = rep("", nrow(avg_protein_data_wide_cc)))
+
+#plot with individual replicates
+# protein_data_wide <- prot_data_long %>% 
+#   unite("treat_rep", treatment, replicate, sep = "_") %>%
+#   dcast(prot_name ~ treat_rep, value.var = "value") 
+# 
+# protein_data_wide_cc <- protein_data_wide[complete.cases(protein_data_wide), ]
+# 
+# heatmap_prots <- pheatmap(
+#   mat = protein_data_wide_cc %>% dplyr::select(-prot_name),
+#   scale = "row", cluster_rows  = F, fontsize_col = 12, labels_row = rep("", nrow(protein_data_wide_cc)))
+```
+
+
+2025-07-21 -- multicorrelation plot 
+```{r}
+# Step 1: Transpose data (remove 'prot_name', correlate columns)
+cor_matrix <- cor(prot_data %>% select(-prot_name, -all_mapped_prots, -n_fragments, -n_peptides), use = "pairwise.complete.obs")
+
+# Step 2: Melt the correlation matrix into long format
+cor_long <- melt(cor_matrix, varnames = c("Sample1", "Sample2"), value.name = "Correlation")
+
+ordered_samples <- c(
+  "lowFe_A", "lowFe_B", "lowFe_C",
+  "medFe_A", "medFe_B", "medFe_C",
+  "lowMn_A", "lowMn_B", "lowMn_C", 
+    "replete_A", "replete_B", "replete_C")
+
+cor_long <- cor_long %>%
+  mutate(
+    Sample1 = factor(Sample1, levels = ordered_samples),
+    Sample2 = factor(Sample2, levels = ordered_samples)
+  )
+
+cor_long <- cor_long %>% na.omit()
+
+# Step 3: Plot with ggplot
+correlation <- ggplot(cor_long, aes(x = Sample1, y = Sample2, fill = Correlation)) +
+  geom_tile(color = "black") +
+  # scale_fill_gradientn(colours = colorspace::diverge_hcl(11))+
+   # scale_fill_gradient2(low = "#00AFBB", mid = "white", high = "#FC4E07", midpoint = 0.94)+
+  
+   scale_fill_gradient2(low = "white", mid = "grey", high = "black", midpoint = 0.93)+
+
+
+  xlab("") + ylab ("")+
+#   scale_fill_gradient2(low = "blue", high = "red", mid = "white",
+#                       midpoint = 0.94,
+#                        name = "Pearson\nCorrelation") +
+# # scale_fill_gradient2(
+#   low = "grey",
+#   mid = "white",
+#   high = "brown",
+#   midpoint = 0.95
+# )  # 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text = element_text(size = 8),
+        panel.grid = element_blank(),  plot.margin = unit(c(0, 0, 0, 0), "cm")); correlation
+  
+```
+
+2025-07-21 -- Figure 2 construction
+```{r}
+library(ggplotify)
+ups2 <- as.ggplot(ups)
+heatmap <- as.ggplot(heatmap_means)
+
+
+nmds_adjusted <- ggdraw() +
+  draw_plot(nmds, x = 0.08, y = 0.22, width = 0.9, height = 0.7); nmds_adjusted
+
+correlation_adjusted <- plot_grid(NULL, correlation, 
+                                  rel_widths = c(0.05, 1))
+top <- plot_grid (correlation_adjusted, NULL, 
+           nmds_adjusted, NULL,
+           ncol = 2, 
+           rel_heights = c(1,0.8), rel_widths = c(1,1), align = "hv", labels = c ("(A)", "(B)", "(C)" )); top
+
+
+#png("C:/Users/loayj/OneDrive - Woods Hole Oceanographic Institution/postdoc/misc/other_projects/fcylproteomes/figures/figure2_20250904.png", width= 10, height= 10, units = "in",  res = 600) 
+
+plot_grid(top, NULL, ncol = 1, rel_heights = c(1,0.5), rel_widths = c(1,1))  +
+          draw_plot (ups2, x = -0.22, y = -0.04, width = 1.1, height = 0.44) + 
+          draw_plot_label("(D)", x = 0.001, y = 0.4, size = 14) +
+          draw_plot (heatmap, x = 0.52, y = 0.17, width = 0.4, height = 0.82) 
+#dev.off()
+```
+
+2025-07-20 -- DE analysis
+```{r}
+library("DEP") #https://www.bioconductor.org/packages/devel/bioc/vignettes/DEP/inst/doc/DEP.html
+data <- prot_data
+
+data[, 5:16] <- 10^data[, 5:16] #unlog the data
+
+data_unique <- make_unique(data, "prot_name", "all_mapped_prots", delim = ";")
+
+#make sure there are no duplicates
+data_unique$prot_name %>% duplicated() %>% any()
+LFQ_columns <- grep("Fe|rep|Mn", colnames(data)) # get LFQ column numbers
+experimental_design <- read.csv ("./data/expdesign.csv")
+
+data_se <- make_se(data_unique, LFQ_columns, experimental_design)
+
+
+plot_frequency(data_se)
+
+data_filt <- filter_missval(data_se, thr = 0)
+data_filt2 <- filter_missval(data_se, thr = 1)
+
+plot_numbers(data_filt2)
+
+data_norm <- normalize_vsn(data_filt)
+plot_normalization(data_filt, data_norm)
+
+plot_missval(data_filt)
+plot_detect(data_filt)
+
+data_imp <- impute(data_norm, fun = "MinProb", q = 0.01)
+data_imp_man <- impute(data_norm, fun = "man", shift = 1.8, scale = 0.3)
+data_imp_knn <- impute(data_norm, fun = "knn", rowmax = 0.9)
+
+plot_imputation(data_norm, data_imp_knn) #used data with Knn imputation
+
+data_diff <- test_diff(data_imp_knn, type = "control", control = "replete")
+
+data_diff_all_contrasts <- test_diff(data_imp_knn, type = "all")
+
+
+dep <- add_rejections(data_diff, alpha = 0.05, lfc = log2(0.5))
+
+plot_pca(dep, x = 1, y = 2, n = 150, point_size = 4)
+
+plot_cor(dep, significant = TRUE, lower = 0, upper = 1, pal = "Reds")
+
+plot_volcano(dep, contrast = "lowFe_vs_replete", label_size = 2, add_names = TRUE)
+plot_volcano(dep, contrast = "lowMn_vs_replete", label_size = 2, add_names = TRUE)
+
+
+data_results <- get_results(dep)
+
+
+write.csv(data_results, "DEanalysis_20250719.csv", row.names = F)
+
+```
+
+2025-07-21 -- plot DE analysis
+```{r}
+data_results <- read.csv( './data/DEanalysis_20250719.csv')
+
+library (ggrepel)
+
+data_results <- data_results %>%
+  mutate(protein_annotation = ifelse(grepl("OEU06517", name), "pTF", #phytotransferrin, ISIP2A
+                              ifelse(grepl("OEU14956.1", name), "ISIP1",
+                              ifelse(grepl("EU07432.1_flavodoxin", name), "Fld",
+                              ifelse(grepl("OEU20437.1_", name), "Fld2",
+                              ifelse(grepl("QGA73635.1", name), "Fd",
+                             # ifelse(grepl("Rhoda", name), "Rhodanese",
+                              ifelse(grepl("rhodo", name), "Rhd",
+                              ifelse(grepl("OEU13743.1", name), "Cyt_C-P",
+                              ifelse(grepl("OEU07527.1", name), "Cyt_c6",
+                              ifelse(grepl("OEU14872.1|OEU12277.1", name), "Ukn",
+                              ifelse(grepl("OEU18531.1", name), "FBA",
+                              ifelse(grepl("OEU17975.1", name), "Ukn",
+                              ifelse(grepl("OEU20390.1", name), "PSA-E",
+                              ifelse(grepl("OEU08035.1", name), "Ukn",
+                              ifelse(grepl("OEU15614.1", name), "FeABC1",
+                              ifelse(grepl("OEU13476.1", name), "Ukn",
+                              ifelse(grepl("OEU09596.1", name), "Amn_tr",
+                              #ifelse(grepl("OEU17064.1", name), "Mn-SOD",
+                              ifelse(grepl("OEU20260.1", name), "ZIP",
+                              ifelse(grepl("OEU09193.1", name), "deltaCA",
+                              ifelse(grepl("OEU20382.1", name), "HBQ1",
+                              ifelse(grepl("OEU06897.1|OEU12858.1|OEU22900.1", name), "Pcyn",
+                              NA)))))))))))))))))))))
+         
+
+FeDE <- ggplot (data_results, aes(x = lowFe_vs_replete_ratio, y = -log(lowFe_vs_replete_p.adj))) + 
+  geom_point(aes(color = lowFe_vs_replete_significant), show.legend = F, alpha = 0.3, size = 2.5) + 
+  geom_point(
+    data = subset(data_results, !is.na(protein_annotation) & protein_annotation != ""),
+    color = "black",
+    size = 2.5
+  ) +
+  
+      geom_point(
+    data = subset(data_results, !is.na(protein_annotation) & protein_annotation != ""),
+    color = "black",
+    size = 2.5
+  ) +
+    geom_hline(yintercept = -log(0.05), linetype = "dashed", color = "black") +
+  geom_vline(xintercept  = 1.5, linetype = "dashed", color = "black") +
+    geom_vline(xintercept = -1.5, linetype = "dashed", color = "black") +
+
+  scale_color_manual(values = c("TRUE" = "darkgreen", "FALSE" = "grey")) +
+  labs(
+  x = expression(Log[2]~"Fold Change (Low Fe vs Replete)"),
+  y = expression(-log[10]~"Adjusted p-value" )
+)+
+
+
+  scale_y_log10()+ 
+  theme_bw() + 
+         geom_text_repel(
+    data = subset(data_results, !is.na(protein_annotation) & protein_annotation != ""),
+    aes(label = protein_annotation),
+    vjust = -1,
+    size = 4,
+    segment.color = "black"
+  ) ; FeDE
+
+
+MnDE<- ggplot (data_results, aes(x = lowMn_vs_replete_ratio, y = -log(lowMn_vs_replete_p.adj))) + 
+  geom_point(aes(color = lowMn_vs_replete_significant), show.legend = F, alpha = 0.3, size = 2.5) + 
+  geom_point(
+    data = subset(data_results, !is.na(protein_annotation) & protein_annotation != ""),
+    color = "black",
+    size = 2.5
+  ) +
+  
+  
+    geom_point(
+    data = subset(data_results, !is.na(protein_annotation) & protein_annotation != ""),
+    color = "black",
+    size = 2.5
+  ) +
+    geom_hline(yintercept = -log(0.05), linetype = "dashed", color = "black") +
+  geom_vline(xintercept  = 1.5, linetype = "dashed", color = "black") +
+    geom_vline(xintercept = -1.5, linetype = "dashed", color = "black") +
+
+  scale_color_manual(values = c("TRUE" = "darkgreen", "FALSE" = "grey")) +
+  labs(
+  x = expression(Log[2]~"Fold Change (Low Mn vs Replete)"),
+  y = expression(-log[10]~"Adjusted p-value" )
+)+
+
+  scale_y_log10()+ 
+  theme_bw() + 
+         geom_text_repel(
+    data = subset(data_results, !is.na(protein_annotation) & protein_annotation != ""),
+    aes(label = protein_annotation),
+    vjust = -1,
+    size = 4,
+    segment.color = "black"
+  ); MnDE
+```
+
+2025-07-21 -- COG analysis
+```{r}
+## Merge the protein abundance data with the annotation data
+prot_data_annotated <- merge(x = prot_data, 
+                             y = prot_annots, 
+                             by = 'prot_name', all = TRUE)
+## Map a consensus COG value for every protein
+map_consensus_cog_cat <- function(prot_df, prot_annot_file){
+    cog_i_vec <- c()
+  
+  for(i in 1:nrow(prot_df)){
+    ## Collect the vector of unmapped proteins
+    vector_prots_i <- prot_df$all_mapped_prots[i]
+    ## See which of the annotations is present in that vector
+    for(j in 1:nrow(prot_annot_file)){
+      
+      prot_j <- prot_annot_file$prot_name[j]
+      cog_i <- "No Mapping"
+      ## If it is present, then change the variable cog_i to the COG category
+      if(grepl(pattern = prot_j, x = vector_prots_i, fixed = TRUE)){
+        
+        cog_i <- prot_annot_file$COG_category[j]
+        
+        break
+      }
+    }
+    cog_i_vec <- c(cog_i_vec, cog_i)
+  }
+  return(cog_i_vec)
+}
+
+## Map the COG categories
+cov_vec_out <- map_consensus_cog_cat(prot_df = prot_data, 
+                                     prot_annot_file = prot_annots)
+
+
+
+
+
+## Add to the protein dataframe
+prot_data$cog_cat <- cov_vec_out
+
+## Convert data to long format
+prot_data_cog_cat_long <- prot_data %>% 
+  dplyr::select(-n_fragments, -n_peptides) %>% 
+  melt(variable.name = 'replicate') %>% 
+  
+  separate(replicate, into = c("treatment", "replicate"), sep = "_")
+  #inner_join(df_treat, by = 'replicate')
+
+## plot the data
+prot_data_cog_cat_long %>% 
+  group_by(treatment, cog_cat) %>% 
+  summarize(number_prots = n(),
+            summed_int = value) %>% 
+  dplyr::filter(cog_cat != "",
+                cog_cat != "-") %>% 
+  ggplot(aes(x = cog_cat, y = number_prots)) +
+  geom_point() +
+  scale_y_log10() +
+  facet_wrap(~treatment)
+  
+prot_presence_cat_low_fe <- prot_data_cog_cat_long %>% 
+  dplyr::mutate(nchar_cog_cat = nchar(cog_cat)) %>% 
+  dplyr::filter(nchar_cog_cat == 1) %>% 
+  group_by(treatment, cog_cat, replicate) %>% 
+  summarize(number_prots = n(),
+            summed_int = sum(value, na.rm = TRUE)) %>% 
+  inner_join(cog_category_names %>% 
+               dplyr::rename(cog_cat = Category), 
+             by = "cog_cat") %>% 
+  dplyr::filter(cog_cat != "",
+                cog_cat != "-",
+                Description != 'Function unknown') %>% 
+  dplyr::filter(treatment == 'lowFe') %>% 
+  ggplot(aes(x = fct_reorder(Description, number_prots), y = number_prots)) +
+  geom_point() +
+  xlab('COG Category') +
+  ylab('Number of Proteins Quantified') +
+  scale_y_log10() +
+  theme_bw() +
+  coord_flip();prot_presence_cat_low_fe
+
+
+
+scientific_10 <- function(x) {
+  ifelse(
+    x==0, "0",
+    parse(text = sub("e[+]?", " %*% 10^", scientific_format()(x)))
+  )
+} 
+
+prot_int_sum_plot <- prot_data_cog_cat_long %>% 
+  dplyr::mutate(nchar_cog_cat = nchar(cog_cat)) %>% 
+  dplyr::filter(nchar_cog_cat == 1) %>% 
+  group_by(treatment, cog_cat, replicate) %>% 
+  summarize(number_prots = n(),
+            summed_int = sum(10^value, na.rm = TRUE)) %>% 
+  inner_join(cog_category_names %>% 
+               dplyr::rename(cog_cat = Category), 
+             by = "cog_cat") %>% 
+  dplyr::filter(cog_cat != "",
+                cog_cat != "-") %>% 
+  # dplyr::filter(treatment == 'Low Fe') %>% 
+  ggplot(aes(x = fct_reorder(Description, summed_int), 
+             y = summed_int)) +
+  #geom_point(aes(colour = treatment)) +
+  # scale_y_continuous(label=scientific_10) +
+    stat_summary(fun = mean, geom = "point", size = 2, aes(color = treatment)) +
+    stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2, aes (color = treatment), show.legend = F) +
+
+  scale_color_manual(values = c("lowFe" = "black",
+                                           "medFe" = "#009E73",
+                                           "replete" = "#CC79A7",
+                                           "lowMn" = "#56B4E9"))+
+  scale_y_log10(
+    breaks = 10^(1:25),
+    labels = parse(text = paste0("10^", 1:25))
+  ) +
+  theme_bw() +
+  theme(legend.position = c(0.75,0.11), 
+        legend.title = element_blank()) +
+  xlab('COG Category') +
+  ylab('Sum of Protein Intensities') +
+  coord_flip();prot_int_sum_plot
+
+
+
+```
+
+
+2025-07-21 -- Figure 3 construction
+```{r}
+#png("C:/Users/loayj/OneDrive - Woods Hole Oceanographic Institution/postdoc/misc/other_projects/fcylproteomes/figures/figure3_20250922.png", width= 12, height= 12, units = "in",  res = 600) 
+
+plot_grid (prot_int_sum_plot, FeDE,
+          prot_presence_cat_low_fe, MnDE,
+           ncol = 2, 
+           rel_heights = c(1,1), rel_widths = c(1.2,1), align = "h",
+          labels = c("(A)", "(C)", "(B)", "(D)"))
+
+#dev.off()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
