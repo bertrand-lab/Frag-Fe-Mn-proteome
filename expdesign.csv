@@ -1,0 +1,13 @@
+label,condition,replicate
+replete_A,replete,1
+replete_B,replete,2
+replete_C,replete,3
+medFe_A,medFe,1
+medFe_B,medFe,2
+medFe_C,medFe,3
+lowFe_A,lowFe,1
+lowFe_B,lowFe,2
+lowFe_C,lowFe,3
+lowMn_A,lowMn,1
+lowMn_B,lowMn,2
+lowMn_C,lowMn,3
